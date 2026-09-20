@@ -47,6 +47,43 @@ UI itself only offers a 0–99 position slider). The HA cover therefore has open
 set-position but no stop button. Position updates when travel completes, so HA lags the
 physical shutter by the travel time (~20 s typical).
 
+### The shutter scale is inverted relative to Home Assistant
+
+The controller counts a shutter as `basicvalue` **0 = fully open, 99 = fully closed**.
+Home Assistant's cover position is the opposite: **100 = open, 0 = closed**. The bridge
+is the single place that knows about this — `device_to_ha()` / `ha_to_device()` invert in
+both directions, so MQTT and discovery are plain HA convention
+(`position_open: 100`, `position_closed: 0`) and need no adjustment.
+
+Passing `basicvalue` through unconverted breaks all three shutter paths at once:
+position reporting reads inverted, `payload_open` drives the shutter closed, and
+`set_position` to 100 % sends `99` (fully closed). The mapping round-trips exactly —
+`ha_to_device(device_to_ha(v)) == v` for every `v` in 0–99.
+
+Note that at `current_position: 4` HA still reports the cover as `open`; HA's MQTT cover
+only says `closed` at position exactly 0. That is standard HA behaviour, not a bridge bug.
+
+### Availability must be re-asserted after every MQTT reconnect
+
+`availability` is published retained and is also the LWT, and the bridge only publishes it
+on *change* (to keep the topic quiet). Those two facts combine into a trap: when the broker
+restarts, the LWT leaves a retained `offline` on the topic, the bridge reconnects, but its
+in-memory "last published availability" still says `online` — so it never corrects the
+topic. Every entity then sits **unavailable in Home Assistant indefinitely while the bridge
+is healthy**, polling the device and publishing state changes that HA ignores.
+
+`on_connect` therefore resets `self.online = None`, which forces the next successful poll to
+republish `online`. If you refactor availability handling, keep that reset.
+
+Diagnosing this from the HA side is misleading — the entities look like a dead device. Check
+the retained topic directly before suspecting the controller:
+
+```bash
+mosquitto_sub -h <broker> -u <user> -P <pass> -t '<base>/#' -v -W 5
+```
+
+`availability offline` alongside plausible, current relay states is this bug, not an outage.
+
 ## Setup
 
 Requirements: the controller reachable on your LAN (static DHCP reservation recommended —

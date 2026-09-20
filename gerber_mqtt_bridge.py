@@ -25,8 +25,11 @@ Configuration is via environment variables (see .env.example / docker-compose.ex
 
 Semantics (reverse-engineered from the device web UI):
   - relays: `switch` command, val 0 = off, 255 = on
-  - shutters: positional, val 0-99 (0 = closed); the controller does the time-based
-    positioning itself using its configured travel time. There is NO stop command.
+  - shutters: positional, val 0-99, where **0 = fully open and 99 = fully closed** --
+    the opposite of Home Assistant's cover convention, so this bridge inverts it in
+    both directions (see device_to_ha / ha_to_device). The controller does the
+    time-based positioning itself using its configured travel time. There is NO stop
+    command.
 """
 import base64
 import json
@@ -72,6 +75,19 @@ DEVICE = {
 # ---- Gerber HTTP API -------------------------------------------------------
 # The web UI double-encodes the payload: encodeURIComponent(encodeURI(json)).
 # Responses are URI-encoded JSON; respcode 100 == OK.
+
+SHUTTER_MAX = 99  # device basicvalue for a fully closed shutter
+
+
+def device_to_ha(val):
+    """Device 0 (open) .. 99 (closed)  ->  HA 100 (open) .. 0 (closed)."""
+    return round((SHUTTER_MAX - val) * 100 / SHUTTER_MAX)
+
+
+def ha_to_device(pos):
+    """HA 100 (open) .. 0 (closed)  ->  device 0 (open) .. 99 (closed)."""
+    return round((100 - pos) * SHUTTER_MAX / 100)
+
 
 def _encode_uri(s):
     return urllib.parse.quote(s, safe="!#$&'()*+,-./:;=?@_~")
@@ -171,6 +187,12 @@ class Bridge:
         client.subscribe(f"{BASE}/shutter/+/set_position")
         publish_discovery(client)
         self.last = {}  # force republish of all states
+        # The retained availability topic may hold the LWT "offline" the broker
+        # published when the previous session dropped, so forget what we think we
+        # last published and let the next poll re-assert it. Without this, a broker
+        # restart leaves every entity permanently unavailable in Home Assistant
+        # while the bridge itself is healthy and silent.
+        self.online = None
         self.poll_now.set()
 
     def on_message(self, client, userdata, msg):
@@ -183,15 +205,15 @@ class Bridge:
                 log.info("cmd relay %d -> %s", chid, payload)
                 switch(chid, val)
             elif kind == "shutter" and action == "set" and chid in SHUTTER_CHIDS:
-                val = {"OPEN": 99, "CLOSE": 0}.get(payload.upper())
+                val = {"OPEN": ha_to_device(100), "CLOSE": ha_to_device(0)}.get(payload.upper())
                 if val is None:
                     raise ValueError(f"unsupported shutter command {payload!r}")
                 log.info("cmd shutter %d -> %s", chid, payload)
                 switch(chid, val)
             elif kind == "shutter" and action == "set_position" and chid in SHUTTER_CHIDS:
                 pos = max(0, min(100, int(float(payload))))
-                val = round(pos * 99 / 100)
-                log.info("cmd shutter %d position -> %d%% (val %d)", chid, pos, val)
+                val = ha_to_device(pos)
+                log.info("cmd shutter %d position -> %d%% open (val %d)", chid, pos, val)
                 switch(chid, val)
             else:
                 return
@@ -219,7 +241,7 @@ class Bridge:
             v = channels.get(chid)
             if v is not None and v != self.last.get(chid):
                 self.client.publish(
-                    f"{BASE}/shutter/{chid}/position", str(round(v * 100 / 99)), retain=True
+                    f"{BASE}/shutter/{chid}/position", str(device_to_ha(v)), retain=True
                 )
                 self.last[chid] = v
 
