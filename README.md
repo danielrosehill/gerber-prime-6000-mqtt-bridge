@@ -17,6 +17,8 @@ Read that first if your unit isn't reachable over your LAN yet.
 > ⚠️ Unofficial, community-maintained, not affiliated with Gerber. Commands actuate real
 > relays and shutters — use at your own risk.
 
+**Write-up:** [Gerber Prime 6000 in Home Assistant: local control, no cloud](https://blog.danielrosehill.com/posts/gerber-prime-6000-home-assistant-local-control-xwjj6i/) — the full step-by-step walkthrough.
+
 ## How it works
 
 ```
